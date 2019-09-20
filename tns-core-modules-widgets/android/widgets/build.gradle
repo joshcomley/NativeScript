@@ -75,8 +75,8 @@ dependencies {
     if(project.hasProperty("useAndroidX")) {
         println 'Using androix'
         def androidxVersion = computeAndroidXVersion()
-        implementation 'androidx.viewpager:viewpager:' + androidxVersion
-        implementation 'androidx.fragment:fragment:' + androidxVersion
+        implementation 'androidx.fragment:fragment:1.2.0-alpha02'
+        implementation 'androidx.transition:transition:1.2.0-rc01'
     } else {
         println 'Using support library'
         implementation 'com.android.support:support-v4:' + computeSupportVersion()

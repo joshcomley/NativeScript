@@ -51,7 +51,7 @@ function initializeNativeClasses() {
         return;
     }
 
-    class TabFragmentImplementation extends org.nativescript.widgets.FragmentBase {
+    class TabFragmentImplementation extends androidx.fragment.app.Fragment {
         private tab: Tabs;
         private index: number;
 
@@ -206,6 +206,14 @@ function initializeNativeClasses() {
 
         finishUpdate(container: android.view.ViewGroup): void {
             this._commitCurrentTransaction();
+
+            // Uncomment for late loaded
+            // const tabItems = this.owner.items;
+            // const tabItem = tabItems ? tabItems[0] : null;
+            // if (tabItem && this.owner.isLoaded) {
+            //     tabItem.canBeLoaded = true;
+            //     this.owner._loadUnloadTabItems(0);
+            // }
         }
 
         isViewFromObject(view: android.view.View, object: java.lang.Object): boolean {

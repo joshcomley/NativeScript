@@ -272,6 +272,7 @@ export class View extends ViewCommon {
     public static androidBackPressedEvent = androidBackPressedEvent;
 
     public _dialogFragment: androidx.fragment.app.DialogFragment;
+    private _hasParentManager: boolean;
     private _isClickable: boolean;
     private touchListenerIsSet: boolean;
     private touchListener: android.view.View.OnTouchListener;
@@ -347,6 +348,7 @@ export class View extends ViewCommon {
                 if (view._hasFragments) {
                     if (frameOrTabViewItemFound) {
                         manager = view._getChildFragmentManager();
+                        this._hasParentManager = true;
                         break;
                     }
 
@@ -470,6 +472,10 @@ export class View extends ViewCommon {
 
             this.nativeViewProtected.addOnLayoutChangeListener(this.layoutChangeListener);
         }
+    }
+
+    get hasParentManager(): boolean {
+        return this._hasParentManager;
     }
 
     get isLayoutRequired(): boolean {

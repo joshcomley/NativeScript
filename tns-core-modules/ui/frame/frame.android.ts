@@ -14,8 +14,8 @@ import {
 } from "./frame-common";
 
 import {
-    _setAndroidFragmentTransitions, _onFragmentCreateAnimator, _getAnimatedEntries,
-    _updateTransitions, _reverseTransitions, _clearEntry, _clearFragment, AnimationType
+    _setAndroidFragmentTransitions, _getAnimatedEntries,
+    _updateTransitions, _reverseTransitions, _clearEntry, _clearFragment, addNativeTransitionListener, ExpandedTransitionListener
 } from "./fragment.transitions";
 
 // TODO: Remove this and get it from global to decouple builder for angular
@@ -26,11 +26,11 @@ import { profile } from "../../profiling";
 
 export * from "./frame-common";
 
-interface AnimatorState {
-    enterAnimator: any;
-    exitAnimator: any;
-    popEnterAnimator: any;
-    popExitAnimator: any;
+interface TransitionState {
+    enterTransitionListener: any;
+    exitTransitionListener: any;
+    reenterTransitionListener: any;
+    returnTransitionListener: any;
     transitionName: string;
 }
 
@@ -118,7 +118,7 @@ export class Frame extends FrameBase {
     private _containerViewId: number = -1;
     private _tearDownPending = false;
     private _attachedToWindow = false;
-    private _cachedAnimatorState: AnimatorState;
+    private _cachedTransitionState: TransitionState;
 
     constructor() {
         super();
@@ -153,6 +153,13 @@ export class Frame extends FrameBase {
 
     _onAttachedToWindow(): void {
         super._onAttachedToWindow();
+
+        const manager = this._getFragmentManager();
+
+        if (manager && manager.isDestroyed()) {
+            return;
+        }
+
         this._attachedToWindow = true;
         this._processNextNavigationEntry();
     }
@@ -193,12 +200,18 @@ export class Frame extends FrameBase {
             // simulated navigation (NoTransition, zero duration animator) and thus the fragment immediately disappears;
             // the user only sees the animation of the entering fragment as per its specific enter animation settings.
             // NOTE: we are restoring the animation settings in Frame.setCurrent(...) as navigation completes asynchronously
-            this._cachedAnimatorState = getAnimatorState(this._currentEntry);
+            const cachedTransitionState = getTransitionState(this._currentEntry);
 
-            this._currentEntry = null;
-            // NavigateCore will eventually call _processNextNavigationEntry again.
-            this._navigateCore(entry);
-            this._currentEntry = entry;
+            if (cachedTransitionState) {
+                this._cachedTransitionState = cachedTransitionState;
+                this._currentEntry = null;
+                // NavigateCore will eventually call _processNextNavigationEntry again.
+                this._navigateCore(entry);
+                this._currentEntry = entry;
+            }
+            else {
+                super._processNextNavigationEntry();
+            }
         } else {
             super._processNextNavigationEntry();
         }
@@ -246,7 +259,14 @@ export class Frame extends FrameBase {
 
         const manager: androidx.fragment.app.FragmentManager = this._getFragmentManager();
         const transaction = manager.beginTransaction();
-        transaction.remove(this._currentEntry.fragment);
+        const fragment = this._currentEntry.fragment;
+        const fragmentExitTransition = fragment.getExitTransition();
+
+        if (fragmentExitTransition && fragmentExitTransition instanceof org.nativescript.widgets.CustomTransition) {
+            fragmentExitTransition.setResetOnTransitionEnd(true);
+        }
+
+        transaction.remove(fragment);
         transaction.commitNowAllowingStateLoss();
     }
 
@@ -314,9 +334,9 @@ export class Frame extends FrameBase {
         }
 
         // restore cached animation settings if we just completed simulated first navigation (no animation)
-        if (this._cachedAnimatorState) {
-            restoreAnimatorState(this._currentEntry, this._cachedAnimatorState);
-            this._cachedAnimatorState = null;
+        if (this._cachedTransitionState) {
+            restoreTransitionState(this._currentEntry, this._cachedTransitionState);
+            this._cachedTransitionState = null;
         }
 
         // restore original fragment transitions if we just completed replace navigation (hmr)
@@ -328,7 +348,7 @@ export class Frame extends FrameBase {
             const currentEntry = null;
             const newEntry = entry;
             const transaction = null;
-            _setAndroidFragmentTransitions(animated, navigationTransition, currentEntry, newEntry, transaction, this._android.frameId);
+            _setAndroidFragmentTransitions(animated, navigationTransition, currentEntry, newEntry, this._android.frameId);
         }
     }
 
@@ -404,14 +424,38 @@ export class Frame extends FrameBase {
             navigationTransition = null;
         }
 
-        _setAndroidFragmentTransitions(animated, navigationTransition, currentEntry, newEntry, transaction, this._android.frameId);
+        let isNestedDefaultTransition = this["_hasParentManager"] && !currentEntry;
 
-        if (currentEntry && animated && !navigationTransition) {
-            transaction.setTransition(androidx.fragment.app.FragmentTransaction.TRANSIT_FRAGMENT_OPEN);
+        if (isNestedDefaultTransition) {
+            setTimeout(() => {
+                this.setCurrent(newEntry, this._executingContext && this._executingContext.navigationType);
+            });
+
+            //transaction.setTransition(androidx.fragment.app.FragmentTransaction.TRANSIT_NONE);
+            transaction.replace(this.containerViewId, newFragment, newFragmentTag);
+            transaction.commitAllowingStateLoss();
+
+            // setTimeout(() => {
+            //     _setAndroidFragmentTransitions(animated, navigationTransition, currentEntry, newEntry, this._android.frameId, isNestedDefaultTransition);
+
+            //     if (currentEntry && animated && !navigationTransition) {
+            //         //transaction.setTransition(androidx.fragment.app.FragmentTransaction.TRANSIT_FRAGMENT_OPEN);
+            //     }
+
+            //     transaction.replace(this.containerViewId, newFragment, newFragmentTag);
+            //     transaction.commitAllowingStateLoss();
+            // });
+        } else {
+
+            _setAndroidFragmentTransitions(animated, navigationTransition, currentEntry, newEntry, this._android.frameId, isNestedDefaultTransition);
+
+            if (currentEntry && animated && !navigationTransition) {
+                //transaction.setTransition(androidx.fragment.app.FragmentTransaction.TRANSIT_FRAGMENT_OPEN);
+            }
+
+            transaction.replace(this.containerViewId, newFragment, newFragmentTag);
+            transaction.commitAllowingStateLoss();
         }
-
-        transaction.replace(this.containerViewId, newFragment, newFragmentTag);
-        transaction.commitAllowingStateLoss();
     }
 
     public _goBackCore(backstackEntry: BackstackEntry) {
@@ -430,12 +474,7 @@ export class Frame extends FrameBase {
             _updateTransitions(backstackEntry);
         }
 
-        const transitionReversed = _reverseTransitions(backstackEntry, this._currentEntry);
-        if (!transitionReversed) {
-            // If transition were not reversed then use animations.
-            // we do not use Android backstack so setting popEnter / popExit is meaningless (3rd and 4th optional args)
-            transaction.setCustomAnimations(AnimationType.popEnterFakeResourceId, AnimationType.popExitFakeResourceId);
-        }
+        _reverseTransitions(backstackEntry, this._currentEntry);
 
         transaction.replace(this.containerViewId, backstackEntry.fragment, backstackEntry.fragmentTag);
         transaction.commitAllowingStateLoss();
@@ -534,48 +573,50 @@ export class Frame extends FrameBase {
         });
     }
 }
-
-function cloneExpandedAnimator(expandedAnimator: any) {
-    if (!expandedAnimator) {
+function cloneExpandedTransitionListener(expandedTransitionListener: ExpandedTransitionListener) {
+    if (!expandedTransitionListener) {
         return null;
     }
 
-    const clone = expandedAnimator.clone();
-    clone.entry = expandedAnimator.entry;
-    clone.transitionType = expandedAnimator.transitionType;
+    const cloneTransition = expandedTransitionListener.transition.clone();
 
-    return clone;
+    return addNativeTransitionListener(expandedTransitionListener.entry, cloneTransition);
 }
 
-function getAnimatorState(entry: BackstackEntry): AnimatorState {
+function getTransitionState(entry: BackstackEntry): TransitionState {
     const expandedEntry = <any>entry;
-    const animatorState = <AnimatorState>{};
+    const transitionState = <TransitionState>{};
 
-    animatorState.enterAnimator = cloneExpandedAnimator(expandedEntry.enterAnimator);
-    animatorState.exitAnimator = cloneExpandedAnimator(expandedEntry.exitAnimator);
-    animatorState.popEnterAnimator = cloneExpandedAnimator(expandedEntry.popEnterAnimator);
-    animatorState.popExitAnimator = cloneExpandedAnimator(expandedEntry.popExitAnimator);
-    animatorState.transitionName = expandedEntry.transitionName;
+    if (expandedEntry.enterTransitionListener && expandedEntry.exitTransitionListener) {
+        transitionState.enterTransitionListener = cloneExpandedTransitionListener(expandedEntry.enterTransitionListener);
+        transitionState.exitTransitionListener = cloneExpandedTransitionListener(expandedEntry.exitTransitionListener);
+        transitionState.reenterTransitionListener = cloneExpandedTransitionListener(expandedEntry.reenterTransitionListener);
+        transitionState.returnTransitionListener = cloneExpandedTransitionListener(expandedEntry.returnTransitionListener);
+        transitionState.transitionName = expandedEntry.transitionName;
+    }
+    else {
+        return null;
+    }
 
-    return animatorState;
+    return transitionState;
 }
 
-function restoreAnimatorState(entry: BackstackEntry, snapshot: AnimatorState): void {
+function restoreTransitionState(entry: BackstackEntry, snapshot: TransitionState): void {
     const expandedEntry = <any>entry;
-    if (snapshot.enterAnimator) {
-        expandedEntry.enterAnimator = snapshot.enterAnimator;
+    if (snapshot.enterTransitionListener) {
+        expandedEntry.enterTransitionListener = snapshot.enterTransitionListener;
     }
 
-    if (snapshot.exitAnimator) {
-        expandedEntry.exitAnimator = snapshot.exitAnimator;
+    if (snapshot.exitTransitionListener) {
+        expandedEntry.exitTransitionListener = snapshot.exitTransitionListener;
     }
 
-    if (snapshot.popEnterAnimator) {
-        expandedEntry.popEnterAnimator = snapshot.popEnterAnimator;
+    if (snapshot.reenterTransitionListener) {
+        expandedEntry.reenterTransitionListener = snapshot.reenterTransitionListener;
     }
 
-    if (snapshot.popExitAnimator) {
-        expandedEntry.popExitAnimator = snapshot.popExitAnimator;
+    if (snapshot.returnTransitionListener) {
+        expandedEntry.returnTransitionListener = snapshot.returnTransitionListener;
     }
 
     expandedEntry.transitionName = snapshot.transitionName;
@@ -786,33 +827,33 @@ class FragmentCallbacksImplementation implements AndroidFragmentCallbacks {
         superFunc.call(fragment, hidden);
     }
 
-    @profile
-    public onCreateAnimator(fragment: org.nativescript.widgets.FragmentBase, transit: number, enter: boolean, nextAnim: number, superFunc: Function): android.animation.Animator {
-        // HACK: FragmentBase class MUST handle removing nested fragment scenario to workaround
-        // https://code.google.com/p/android/issues/detail?id=55228
-        if (!enter && fragment.getRemovingParentFragment()) {
-            return superFunc.call(fragment, transit, enter, nextAnim);
-        }
+    // @profile
+    // public onCreateAnimator(fragment: org.nativescript.widgets.FragmentBase, transit: number, enter: boolean, nextAnim: number, superFunc: Function): android.animation.Animator {
+    //     // HACK: FragmentBase class MUST handle removing nested fragment scenario to workaround
+    //     // https://code.google.com/p/android/issues/detail?id=55228
+    //     if (!enter && fragment.getRemovingParentFragment()) {
+    //         return superFunc.call(fragment, transit, enter, nextAnim);
+    //     }
 
-        let nextAnimString: string;
-        switch (nextAnim) {
-            case AnimationType.enterFakeResourceId: nextAnimString = "enter"; break;
-            case AnimationType.exitFakeResourceId: nextAnimString = "exit"; break;
-            case AnimationType.popEnterFakeResourceId: nextAnimString = "popEnter"; break;
-            case AnimationType.popExitFakeResourceId: nextAnimString = "popExit"; break;
-        }
+    //     let nextAnimString: string;
+    //     switch (nextAnim) {
+    //         case AnimationType.enterFakeResourceId: nextAnimString = "enter"; break;
+    //         case AnimationType.exitFakeResourceId: nextAnimString = "exit"; break;
+    //         case AnimationType.popEnterFakeResourceId: nextAnimString = "popEnter"; break;
+    //         case AnimationType.popExitFakeResourceId: nextAnimString = "popExit"; break;
+    //     }
 
-        let animator = _onFragmentCreateAnimator(this.entry, fragment, nextAnim, enter);
-        if (!animator) {
-            animator = superFunc.call(fragment, transit, enter, nextAnim);
-        }
+    //     let animator = _onFragmentCreateAnimator(this.entry, fragment, nextAnim, enter);
+    //     if (!animator) {
+    //         animator = superFunc.call(fragment, transit, enter, nextAnim);
+    //     }
 
-        if (traceEnabled()) {
-            traceWrite(`${fragment}.onCreateAnimator(${transit}, ${enter ? "enter" : "exit"}, ${nextAnimString}): ${animator ? "animator" : "no animator"}`, traceCategories.NativeLifecycle);
-        }
+    //     if (traceEnabled()) {
+    //         traceWrite(`${fragment}.onCreateAnimator(${transit}, ${enter ? "enter" : "exit"}, ${nextAnimString}): ${animator ? "animator" : "no animator"}`, traceCategories.NativeLifecycle);
+    //     }
 
-        return animator;
-    }
+    //     return animator;
+    // }
 
     @profile
     public onCreate(fragment: androidx.fragment.app.Fragment, savedInstanceState: android.os.Bundle, superFunc: Function): void {
@@ -945,7 +986,11 @@ class FragmentCallbacksImplementation implements AndroidFragmentCallbacks {
         // retaining reference to a destroyed fragment here somehow causes a cryptic
         // "IllegalStateException: Failure saving state: active fragment has cleared index: -1"
         // in a specific mixed parent / nested frame navigation scenario
-        entry.fragment = null;
+
+        //TODO:!!!
+        if (entry.fragment === fragment) {
+            entry.fragment = null;
+        }
 
         const page = entry.resolvedPage;
         if (!page) {

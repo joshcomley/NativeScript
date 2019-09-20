@@ -4,6 +4,10 @@
 //dependencies {
 //	compile 'com.android.support:recyclerview-v7:+'
 //}
+dependencies {
+  implementation 'androidx.fragment:fragment:1.2.0-alpha02'
+  implementation 'androidx.transition:transition:1.2.0-beta01'
+}
 
 android {  
   defaultConfig {  
@@ -14,3 +18,5 @@ android {
     additionalParameters "--no-version-vectors"  
   }  
 } 
+
+project.ext.androidXAppCompat = "1.1.0-rc01"

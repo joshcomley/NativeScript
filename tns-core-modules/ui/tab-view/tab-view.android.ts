@@ -47,7 +47,7 @@ function initializeNativeClasses() {
         return;
     }
 
-    class TabFragmentImplementation extends org.nativescript.widgets.FragmentBase {
+    class TabFragmentImplementation extends androidx.fragment.app.Fragment {
         private tab: TabView;
         private index: number;
 
